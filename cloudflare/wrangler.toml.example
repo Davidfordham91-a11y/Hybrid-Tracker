@@ -1,0 +1,24 @@
+name = "hybrid-tracker-api"
+main = "cloudflare/worker.js"
+compatibility_date = "2026-07-13"
+
+[vars]
+APP_ORIGIN = "https://your-cloudflare-pages-domain.pages.dev"
+LOCAL_APP_ORIGIN = "http://localhost:8788"
+EMAIL_FROM_ADDRESS = "Hybrid Tracker <login@example.com>"
+OPEN_FOOD_FACTS_USER_AGENT = "HybridTracker/0.4.0 (contact@example.com)"
+DEV_MODE = "false"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hybrid-tracker"
+database_id = "replace-with-d1-database-id"
+
+[[r2_buckets]]
+binding = "FOOD_IMAGES"
+bucket_name = "hybrid-tracker-food-images"
+
+# Set secrets with wrangler secret put:
+# SESSION_SECRET
+# EMAIL_PROVIDER_API_KEY
+# AI_PROVIDER_API_KEY
