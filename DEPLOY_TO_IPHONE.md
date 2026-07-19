@@ -1,30 +1,41 @@
-# Deploy Version 3 To iPhone
+# Access Hybrid Tracker On iPhone
 
-This tracker is a static local-first PWA. It has no backend and no login. When opened on your iPhone, workout data is stored in Safari localStorage for that exact website URL.
+Hybrid Tracker v0.5 is designed to run from an HTTPS Cloudflare Pages URL.
 
-For existing data continuity, deploy Version 3 to the same Netlify site URL you already use:
+## Open The App
 
-`https://davidhybridtracker.netlify.app`
+1. Deploy the repository to Cloudflare Pages.
+2. Open the Pages URL in iPhone Safari.
+3. Tap Share.
+4. Tap Add to Home Screen.
 
-## Fastest Path: Netlify Drop
+Use the same Pages URL each time. Safari stores local app data per website URL, so changing URLs can make existing local data appear missing.
 
-1. Open `https://app.netlify.com/drop` on your PC.
-2. Drag the `hybrid-marathon-tracker-deploy` folder onto the page.
-3. Netlify gives you an HTTPS URL.
-4. Open that URL in iPhone Safari.
-5. Tap Share, then Add to Home Screen.
+## Import A JSON Backup
 
-## Cloudflare Pages
+If local data was cleared or you moved to a new URL:
 
-1. Create a new Cloudflare Pages project.
-2. Upload this folder or the deploy zip.
-3. Use the generated HTTPS URL on iPhone Safari.
-4. Tap Share, then Add to Home Screen.
+1. Open the app on iPhone.
+2. Go to More.
+3. Open Data.
+4. Tap Import.
+5. Choose your recent Hybrid Tracker JSON export.
+6. Confirm the import.
 
-## Important
+The import migrates old v3/v4 exports into the current v5 local schema.
 
-- Do not change the hosted URL casually. Safari localStorage is tied to the URL.
-- If you deploy to the same URL, Version 3 migrates existing data automatically.
-- Use Export JSON before moving to a new URL or clearing Safari data.
-- After importing a JSON backup on the new URL, continue logging there.
-- HTTPS hosting is preferred. Local Wi-Fi serving can fail because of Windows Firewall, VPN routing, or router client isolation.
+## Cloud And Friends
+
+Cloud backup uses the built-in recovery-code account flow unless email magic links are configured. Friend progress sharing uses public friend codes, but progress is shared only after the other person accepts the request.
+
+## If Safari Shows A Service Worker Redirect Error
+
+Deploy v0.5 or newer, then on iPhone:
+
+1. Open Settings.
+2. Safari -> Advanced -> Website Data.
+3. Search for the old Hybrid Tracker domain.
+4. Delete only that site data if the old broken worker is still stuck.
+5. Reopen the Pages URL.
+
+The v0.5 service worker avoids caching redirected responses and uses a fresh cache name.

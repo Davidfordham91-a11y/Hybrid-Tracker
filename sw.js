@@ -1,9 +1,12 @@
-const CACHE_NAME = "hybrid-tracker-v4-3";
+const CACHE_NAME = "hybrid-tracker-v5-0";
 const APP_SHELL = "./";
 const ASSETS = [
   APP_SHELL,
   "./styles.css",
   "./app.js",
+  "./src/main.js",
+  "./src/core/version.js",
+  "./src/utils/validation.js",
   "./manifest.webmanifest",
   "./icon.svg"
 ];
