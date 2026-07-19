@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 3,
+  "version": 3,
+  "profile": {
+    "displayName": "Dave",
+    "bodyweightKg": 108,
+    "heightCm": 192,
+    "gymLocation": "Jetts Albany Creek",
+    "raceDate": "2026-10-04"
+  },
+  "runs": {
+    "run-2026-07-19": {
+      "actualDistance": 8,
+      "time": "00:44:00",
+      "pace": "5:30 /km",
+      "status": "completed"
+    }
+  },
+  "gymLogs": {},
+  "metrics": [],
+  "nutrition": {
+    "entries": {},
+    "presets": []
+  }
+}

@@ -6,7 +6,7 @@ compatibility_date = "2026-07-13"
 APP_ORIGIN = "https://your-cloudflare-pages-domain.pages.dev"
 LOCAL_APP_ORIGIN = "http://localhost:8788"
 EMAIL_FROM_ADDRESS = "Hybrid Tracker <login@example.com>"
-OPEN_FOOD_FACTS_USER_AGENT = "HybridTracker/0.4.0 (contact@example.com)"
+OPEN_FOOD_FACTS_USER_AGENT = "HybridTracker/0.5.0 (contact@example.com)"
 DEV_MODE = "false"
 
 [[d1_databases]]

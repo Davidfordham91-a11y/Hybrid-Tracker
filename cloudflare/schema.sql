@@ -50,13 +50,14 @@ CREATE INDEX IF NOT EXISTS idx_recovery_accounts_friend_code ON recovery_account
 CREATE TABLE IF NOT EXISTS friendships (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   friend_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  status TEXT NOT NULL DEFAULT 'active',
+  status TEXT NOT NULL DEFAULT 'pending',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (user_id, friend_user_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_friendships_friend ON friendships(friend_user_id);
+UPDATE friendships SET status = 'accepted' WHERE status = 'active';
 
 CREATE TABLE IF NOT EXISTS records (
   id TEXT NOT NULL,

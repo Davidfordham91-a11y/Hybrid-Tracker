@@ -1,6 +1,8 @@
 const SESSION_COOKIE = "hybrid_session";
 const TOKEN_TTL_SECONDS = 15 * 60;
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 90;
+const MAX_JSON_BYTES = 768 * 1024;
+const MAX_PHOTO_BYTES = 6 * 1024 * 1024;
 
 export default {
   async fetch(request, env) {
@@ -9,14 +11,21 @@ export default {
     if (request.method === "OPTIONS") return corsResponse(request, env);
 
     try {
+      if (isStateChangingRequest(request) && !isAllowedOrigin(request, env)) return json({ error: "Origin not allowed" }, 403, request, env);
       if (url.pathname === "/api/auth/magic-link" && request.method === "POST") return await requestMagicLink(request, env);
       if (url.pathname === "/api/auth/verify" && request.method === "GET") return await verifyMagicLink(request, env);
+      if (url.pathname === "/api/auth/logout" && request.method === "POST") return await logout(request, env);
       if (url.pathname === "/api/device/create" && request.method === "POST") return await createDeviceAccount(request, env);
       if (url.pathname === "/api/device/restore" && request.method === "POST") return await restoreDeviceAccount(request, env);
       if (url.pathname === "/api/session" && request.method === "GET") return await sessionResponse(request, env);
       if (url.pathname === "/api/sync/push" && request.method === "POST") return await syncPush(request, env);
       if (url.pathname === "/api/sync/pull" && request.method === "GET") return await syncPull(request, env);
       if (url.pathname === "/api/friends/add" && request.method === "POST") return await addFriend(request, env);
+      if (url.pathname === "/api/friends/requests" && request.method === "GET") return await friendRequests(request, env);
+      if (url.pathname === "/api/friends/accept" && request.method === "POST") return await respondFriendRequest(request, env, "accepted");
+      if (url.pathname === "/api/friends/reject" && request.method === "POST") return await respondFriendRequest(request, env, "rejected");
+      if (url.pathname === "/api/friends/remove" && request.method === "POST") return await removeFriend(request, env);
+      if (url.pathname === "/api/friends/block" && request.method === "POST") return await blockFriend(request, env);
       if (url.pathname === "/api/friends/progress" && request.method === "GET") return await friendsProgress(request, env);
       if (url.pathname === "/api/account/export" && request.method === "GET") return await accountExport(request, env);
       if (url.pathname === "/api/account/delete" && request.method === "POST") return await accountDelete(request, env);
@@ -26,7 +35,8 @@ export default {
       return json({ error: "Not found" }, 404, request, env);
     } catch (error) {
       if (error instanceof Response) return withCors(error, request, env);
-      return json({ error: error.message || "Server error" }, 500, request, env);
+      console.error("Worker error", error);
+      return json({ error: "Server error" }, 500, request, env);
     }
   }
 };
@@ -95,17 +105,11 @@ async function restoreDeviceAccount(request, env) {
 }
 
 async function requestMagicLink(request, env) {
-  let body = {};
-  try {
-    const rawBody = await request.text();
-    body = rawBody ? JSON.parse(rawBody) : {};
-  } catch {
-    return json({ error: "Invalid JSON body" }, 400, request, env);
-  }
+  const body = await readJsonBody(request);
   const email = normalizeEmail(body.email);
   if (!email) return json({ error: "Valid email is required" }, 400, request, env);
   if (!emailDeliveryConfigured(env)) return json({ error: "Email provider is not configured" }, 503, request, env);
-  await rateLimitMagicLink(request, env);
+  await rateLimitMagicLink(request, env, email);
 
   const now = new Date().toISOString();
   const userId = await upsertUser(env, email, body.timezone || "Australia/Brisbane", body.units || "metric", now);
@@ -154,12 +158,24 @@ async function sessionResponse(request, env) {
   return json({ user: session?.user || null }, 200, request, env);
 }
 
+async function logout(request, env) {
+  const token = cookieValue(request.headers.get("Cookie") || "", SESSION_COOKIE);
+  if (token) {
+    const hash = await sha256(token + env.SESSION_SECRET);
+    await env.DB.prepare("DELETE FROM sessions WHERE session_hash = ?").bind(hash).run();
+  }
+  return json({ ok: true }, 200, request, env, expiredCookie());
+}
+
 async function syncPush(request, env) {
   const session = await requireSession(request, env);
-  const body = await request.json();
+  const body = await readJsonBody(request);
   const now = new Date().toISOString();
-  const snapshot = body.snapshot || {};
+  if (!body || typeof body !== "object" || !body.snapshot || typeof body.snapshot !== "object") return json({ error: "Valid snapshot is required" }, 400, request, env);
+  const snapshot = { ...body.snapshot };
   snapshot.auth = undefined;
+  const payload = JSON.stringify(snapshot);
+  if (payload.length > MAX_JSON_BYTES) return json({ error: "Snapshot is too large" }, 413, request, env);
 
   await env.DB.prepare(`
     INSERT INTO records (id, user_id, type, payload, revision, device_id, updated_at, created_at)
@@ -170,13 +186,13 @@ async function syncPush(request, env) {
       device_id = excluded.device_id,
       updated_at = excluded.updated_at,
       deleted_at = NULL
-  `).bind("snapshot", session.user.id, JSON.stringify(snapshot), body.deviceId || "", now, now).run();
+  `).bind("snapshot", session.user.id, payload, safeText(body.deviceId, 100), now, now).run();
 
-  for (const change of body.outbox || []) {
+  for (const change of Array.isArray(body.outbox) ? body.outbox.slice(0, 200) : []) {
     await env.DB.prepare(`
       INSERT OR IGNORE INTO sync_journal (id, user_id, device_id, reason, payload, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).bind(change.id, session.user.id, body.deviceId || "", change.reason || "change", JSON.stringify(change), change.createdAt || now).run();
+    `).bind(safeText(change.id || crypto.randomUUID(), 120), session.user.id, safeText(body.deviceId, 100), safeText(change.reason || "change", 80), JSON.stringify(change).slice(0, 65536), change.createdAt || now).run();
   }
 
   return json({ ok: true, syncedAt: now }, 200, request, env);
@@ -207,17 +223,127 @@ async function addFriend(request, env) {
   if (friend.id === session.user.id) return json({ error: "That is your own friend code" }, 400, request, env);
 
   const now = new Date().toISOString();
+  const blocked = await env.DB.prepare(`
+    SELECT status
+    FROM friendships
+    WHERE ((user_id = ? AND friend_user_id = ?)
+       OR (user_id = ? AND friend_user_id = ?))
+      AND status = 'blocked'
+    LIMIT 1
+  `).bind(session.user.id, friend.id, friend.id, session.user.id).first();
+  if (blocked?.status === "blocked") return json({ error: "Friend request is not available" }, 403, request, env);
+  const existing = await env.DB.prepare(`
+    SELECT status
+    FROM friendships
+    WHERE user_id = ? AND friend_user_id = ?
+    LIMIT 1
+  `).bind(session.user.id, friend.id).first();
+  if (existing?.status === "accepted") return json({ ok: true, status: "accepted", friend: publicFriendPayload(friend) }, 200, request, env);
+  const reverse = await env.DB.prepare(`
+    SELECT status
+    FROM friendships
+    WHERE user_id = ? AND friend_user_id = ?
+    LIMIT 1
+  `).bind(friend.id, session.user.id).first();
+  if (reverse?.status === "accepted") {
+    await env.DB.prepare(`
+      INSERT INTO friendships (user_id, friend_user_id, status, created_at, updated_at)
+      VALUES (?, ?, 'accepted', ?, ?)
+      ON CONFLICT(user_id, friend_user_id) DO UPDATE SET status = 'accepted', updated_at = excluded.updated_at
+    `).bind(session.user.id, friend.id, now, now).run();
+    return json({ ok: true, status: "accepted", friend: publicFriendPayload(friend) }, 200, request, env);
+  }
+  if (reverse?.status === "pending") return json({ error: "This mate has already sent you a request. Accept it from Requests." }, 409, request, env);
   await env.DB.prepare(`
     INSERT INTO friendships (user_id, friend_user_id, status, created_at, updated_at)
-    VALUES (?, ?, 'active', ?, ?)
-    ON CONFLICT(user_id, friend_user_id) DO UPDATE SET status = 'active', updated_at = excluded.updated_at
+    VALUES (?, ?, 'pending', ?, ?)
+    ON CONFLICT(user_id, friend_user_id) DO UPDATE SET
+      status = CASE WHEN friendships.status = 'blocked' THEN friendships.status ELSE 'pending' END,
+      updated_at = excluded.updated_at
+  `).bind(session.user.id, friend.id, now, now).run();
+  return json({ ok: true, status: "pending", friend: publicFriendPayload(friend) }, 200, request, env);
+}
+
+async function friendRequests(request, env) {
+  await ensureRecoverySchema(env);
+  const session = await requireSession(request, env);
+  const rows = await env.DB.prepare(`
+    SELECT users.display_name, users.updated_at, recovery_accounts.friend_code, friendships.created_at, friendships.status
+    FROM friendships
+    JOIN users ON users.id = friendships.user_id
+    LEFT JOIN recovery_accounts ON recovery_accounts.user_id = users.id
+    WHERE friendships.friend_user_id = ? AND friendships.status = 'pending' AND users.deleted_at IS NULL
+    ORDER BY friendships.created_at DESC
+  `).bind(session.user.id).all();
+  const requests = (rows.results || []).map((row) => ({
+    ...publicFriendPayload(row),
+    status: "pending",
+    requestedAt: row.created_at || ""
+  }));
+  return json({ ok: true, requests, fetchedAt: new Date().toISOString() }, 200, request, env);
+}
+
+async function respondFriendRequest(request, env, status) {
+  await ensureRecoverySchema(env);
+  const session = await requireSession(request, env);
+  const friend = await friendFromRequestBody(request, env);
+  if (!friend) return json({ error: "Friend code was not recognised" }, 404, request, env);
+  const pending = await env.DB.prepare(`
+    SELECT status
+    FROM friendships
+    WHERE user_id = ? AND friend_user_id = ? AND status = 'pending'
+    LIMIT 1
+  `).bind(friend.id, session.user.id).first();
+  if (!pending) return json({ error: "No pending friend request found" }, 404, request, env);
+
+  const now = new Date().toISOString();
+  if (status === "accepted") {
+    await env.DB.prepare("UPDATE friendships SET status = 'accepted', updated_at = ? WHERE user_id = ? AND friend_user_id = ?")
+      .bind(now, friend.id, session.user.id).run();
+    await env.DB.prepare(`
+      INSERT INTO friendships (user_id, friend_user_id, status, created_at, updated_at)
+      VALUES (?, ?, 'accepted', ?, ?)
+      ON CONFLICT(user_id, friend_user_id) DO UPDATE SET status = 'accepted', updated_at = excluded.updated_at
+    `).bind(session.user.id, friend.id, now, now).run();
+    return json({ ok: true, status: "accepted", friend: publicFriendPayload(friend) }, 200, request, env);
+  }
+
+  await env.DB.prepare("UPDATE friendships SET status = 'rejected', updated_at = ? WHERE user_id = ? AND friend_user_id = ?")
+    .bind(now, friend.id, session.user.id).run();
+  return json({ ok: true, status: "rejected" }, 200, request, env);
+}
+
+async function removeFriend(request, env) {
+  await ensureRecoverySchema(env);
+  const session = await requireSession(request, env);
+  const friend = await friendFromRequestBody(request, env);
+  if (!friend) return json({ error: "Friend code was not recognised" }, 404, request, env);
+  const now = new Date().toISOString();
+  await env.DB.prepare(`
+    UPDATE friendships
+    SET status = 'removed', updated_at = ?
+    WHERE (user_id = ? AND friend_user_id = ?) OR (user_id = ? AND friend_user_id = ?)
+  `).bind(now, session.user.id, friend.id, friend.id, session.user.id).run();
+  return json({ ok: true, status: "removed" }, 200, request, env);
+}
+
+async function blockFriend(request, env) {
+  await ensureRecoverySchema(env);
+  const session = await requireSession(request, env);
+  const friend = await friendFromRequestBody(request, env);
+  if (!friend) return json({ error: "Friend code was not recognised" }, 404, request, env);
+  const now = new Date().toISOString();
+  await env.DB.prepare(`
+    INSERT INTO friendships (user_id, friend_user_id, status, created_at, updated_at)
+    VALUES (?, ?, 'blocked', ?, ?)
+    ON CONFLICT(user_id, friend_user_id) DO UPDATE SET status = 'blocked', updated_at = excluded.updated_at
   `).bind(session.user.id, friend.id, now, now).run();
   await env.DB.prepare(`
-    INSERT INTO friendships (user_id, friend_user_id, status, created_at, updated_at)
-    VALUES (?, ?, 'active', ?, ?)
-    ON CONFLICT(user_id, friend_user_id) DO UPDATE SET status = 'active', updated_at = excluded.updated_at
-  `).bind(friend.id, session.user.id, now, now).run();
-  return json({ ok: true, friend: publicUserPayload(friend) }, 200, request, env);
+    UPDATE friendships
+    SET status = 'removed', updated_at = ?
+    WHERE user_id = ? AND friend_user_id = ? AND status != 'blocked'
+  `).bind(now, friend.id, session.user.id).run();
+  return json({ ok: true, status: "blocked" }, 200, request, env);
 }
 
 async function friendsProgress(request, env) {
@@ -228,7 +354,7 @@ async function friendsProgress(request, env) {
     FROM friendships
     JOIN users ON users.id = friendships.friend_user_id
     LEFT JOIN recovery_accounts ON recovery_accounts.user_id = users.id
-    WHERE friendships.user_id = ? AND friendships.status = 'active' AND users.deleted_at IS NULL
+    WHERE friendships.user_id = ? AND friendships.status = 'accepted' AND users.deleted_at IS NULL
     ORDER BY users.display_name COLLATE NOCASE
   `).bind(session.user.id).all();
 
@@ -250,7 +376,7 @@ async function friendsProgress(request, env) {
       }
     }
     friends.push({
-      ...publicUserPayload(friend),
+      ...publicFriendPayload(friend),
       progress: summarizeProgressSnapshot(snapshot, snapshotRow?.updated_at || friend.updated_at)
     });
   }
@@ -266,7 +392,7 @@ async function accountExport(request, env) {
 
 async function accountDelete(request, env) {
   const session = await requireSession(request, env);
-  const body = await request.json().catch(() => ({}));
+  const body = await readJsonBody(request);
   if (body.confirmation !== "DELETE") return json({ error: "Confirmation text DELETE is required" }, 400, request, env);
   const now = new Date().toISOString();
   await env.DB.prepare("UPDATE records SET deleted_at = ?, updated_at = ? WHERE user_id = ?").bind(now, now, session.user.id).run();
@@ -279,6 +405,8 @@ async function accountDelete(request, env) {
 async function barcodeLookup(request, env) {
   await requireSession(request, env);
   const code = new URL(request.url).pathname.split("/").pop();
+  if (!/^\d{6,18}$/.test(code || "")) return json({ error: "Valid numeric barcode is required" }, 400, request, env);
+  await rateLimitBucket(env, `barcode:${request.headers.get("CF-Connecting-IP") || "unknown"}`, 60, 60 * 60 * 1000);
   const response = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json`, {
     headers: { "User-Agent": env.OPEN_FOOD_FACTS_USER_AGENT || "HybridTracker/0.4.0" }
   });
@@ -288,10 +416,13 @@ async function barcodeLookup(request, env) {
 
 async function photoAnalyse(request, env) {
   await requireSession(request, env);
+  const contentLength = Number(request.headers.get("Content-Length") || 0);
+  if (contentLength && contentLength > MAX_PHOTO_BYTES) return json({ error: "Image must be under 6 MB" }, 413, request, env);
   const form = await request.formData();
   const image = form.get("image");
-  if (!image || !String(image.type || "").startsWith("image/")) return json({ error: "Image file is required" }, 400, request, env);
-  if (image.size > 6 * 1024 * 1024) return json({ error: "Image must be under 6 MB" }, 400, request, env);
+  const type = String(image?.type || "").toLowerCase();
+  if (!image || !["image/jpeg", "image/png", "image/webp"].includes(type)) return json({ error: "JPEG, PNG or WebP image is required" }, 400, request, env);
+  if (image.size > MAX_PHOTO_BYTES) return json({ error: "Image must be under 6 MB" }, 413, request, env);
 
   const imageId = crypto.randomUUID();
   if (env.FOOD_IMAGES) {
@@ -325,8 +456,8 @@ async function healthCheck(request, env) {
   try {
     const row = await env.DB.prepare("SELECT 1 AS ok").first();
     return json({ ...health, database: row?.ok === 1 ? "ok" : "unknown" }, 200, request, env);
-  } catch (error) {
-    return json({ ...health, ok: false, database: "error", error: error.message || "D1 check failed" }, 200, request, env);
+  } catch (_) {
+    return json({ ...health, ok: false, database: "error", error: "D1 check failed" }, 200, request, env);
   }
 }
 
@@ -376,13 +507,25 @@ async function createSession(env, userId, now = new Date().toISOString()) {
   return { token, expiresAt };
 }
 
-async function readJsonBody(request) {
+async function readJsonBody(request, maxBytes = MAX_JSON_BYTES) {
+  const contentType = request.headers.get("Content-Type") || "";
+  if (request.method !== "GET" && contentType && !contentType.toLowerCase().includes("application/json")) {
+    throw jsonError("Content-Type must be application/json", 415);
+  }
+  const contentLength = Number(request.headers.get("Content-Length") || 0);
+  if (contentLength && contentLength > maxBytes) throw jsonError("Request body is too large", 413);
   try {
     const rawBody = await request.text();
+    if (rawBody.length > maxBytes) throw jsonError("Request body is too large", 413);
     return rawBody ? JSON.parse(rawBody) : {};
-  } catch {
-    throw new Response(JSON.stringify({ error: "Invalid JSON body" }), { status: 400, headers: { "Content-Type": "application/json" } });
+  } catch (error) {
+    if (error instanceof Response) throw error;
+    throw jsonError("Invalid JSON body", 400);
   }
+}
+
+function jsonError(message, status) {
+  return new Response(JSON.stringify({ error: message }), { status, headers: { "Content-Type": "application/json" } });
 }
 
 async function ensureRecoverySchema(env) {
@@ -401,13 +544,14 @@ async function ensureRecoverySchema(env) {
     CREATE TABLE IF NOT EXISTS friendships (
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       friend_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      status TEXT NOT NULL DEFAULT 'active',
+      status TEXT NOT NULL DEFAULT 'pending',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (user_id, friend_user_id)
     )
   `).run();
   await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_friendships_friend ON friendships(friend_user_id)").run();
+  await env.DB.prepare("UPDATE friendships SET status = 'accepted' WHERE status = 'active'").run();
 }
 
 function userPayload(row) {
@@ -425,12 +569,28 @@ function userPayload(row) {
   };
 }
 
-function publicUserPayload(row) {
+function publicFriendPayload(row) {
   return {
-    id: row.id,
     displayName: row.display_name || "Hybrid athlete",
     friendCode: row.friend_code || ""
   };
+}
+
+async function friendFromRequestBody(request, env) {
+  const body = await readJsonBody(request);
+  const friendCode = normalizeFriendCode(body.friendCode || "");
+  if (!friendCode) return null;
+  return env.DB.prepare(`
+    SELECT users.id, users.display_name, users.updated_at, recovery_accounts.friend_code
+    FROM recovery_accounts
+    JOIN users ON users.id = recovery_accounts.user_id
+    WHERE recovery_accounts.friend_code = ? AND users.deleted_at IS NULL
+    LIMIT 1
+  `).bind(friendCode).first();
+}
+
+function safeText(value, limit = 120) {
+  return String(value || "").trim().slice(0, limit);
 }
 
 function isAnonymousEmail(email) {
@@ -609,13 +769,17 @@ async function sendResendEmail(env, email, link) {
   });
 }
 
-async function rateLimitMagicLink(request, env) {
+async function rateLimitMagicLink(request, env, email) {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
-  const id = `magic:${ip}`;
+  await rateLimitBucket(env, `magic:ip:${ip}`, 5, 15 * 60 * 1000);
+  await rateLimitBucket(env, `magic:email:${await sha256(email)}`, 5, 15 * 60 * 1000);
+}
+
+async function rateLimitBucket(env, id, maxRequests, windowMs) {
   const row = await env.DB.prepare("SELECT count, reset_at FROM rate_limits WHERE id = ?").bind(id).first();
   const now = Date.now();
-  if (row && Date.parse(row.reset_at) > now && row.count >= 5) throw new Error("Too many magic-link requests. Try again later.");
-  const resetAt = new Date(now + 15 * 60 * 1000).toISOString();
+  if (row && Date.parse(row.reset_at) > now && row.count >= maxRequests) throw jsonError("Too many requests. Try again later.", 429);
+  const resetAt = new Date(now + windowMs).toISOString();
   await env.DB.prepare(`
     INSERT INTO rate_limits (id, count, reset_at)
     VALUES (?, 1, ?)
@@ -633,6 +797,7 @@ async function logAuth(env, userId, event, request) {
 }
 
 function corsResponse(request, env) {
+  if (!isAllowedOrigin(request, env)) return new Response(null, { status: 403, headers: corsHeaders(request, env) });
   return new Response(null, { status: 204, headers: corsHeaders(request, env) });
 }
 
@@ -656,13 +821,26 @@ function html(payload, status, request, env, cookie) {
 
 function corsHeaders(request, env) {
   const origin = request.headers.get("Origin") || "";
-  const allowed = [env.APP_ORIGIN, env.LOCAL_APP_ORIGIN].filter(Boolean);
+  const allowedOrigin = allowedOrigins(env).includes(origin) ? origin : env.APP_ORIGIN || "https://hybrid-tracker.pages.dev";
   return {
-    "Access-Control-Allow-Origin": allowed.includes(origin) ? origin : env.APP_ORIGIN || origin || "https://hybrid-tracker.pages.dev",
+    "Access-Control-Allow-Origin": allowedOrigin,
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS"
   };
+}
+
+function allowedOrigins(env) {
+  return [env.APP_ORIGIN, env.LOCAL_APP_ORIGIN, "https://hybrid-tracker.pages.dev"].filter(Boolean);
+}
+
+function isAllowedOrigin(request, env) {
+  const origin = request.headers.get("Origin") || "";
+  return !origin || allowedOrigins(env).includes(origin);
+}
+
+function isStateChangingRequest(request) {
+  return !["GET", "HEAD", "OPTIONS"].includes(request.method);
 }
 
 function sessionCookie(token, expiresAt) {
