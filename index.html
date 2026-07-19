@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#080b12">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Hybrid Tracker">
+    <title>Hybrid Tracker</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
+    <link rel="icon" href="icon-192.png" type="image/png">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Hybrid Athlete</p>
+          <h1>Hybrid Tracker</h1>
+        </div>
+      </header>
+
+      <main id="app" class="content" aria-live="polite"></main>
+
+      <nav class="tabs" aria-label="Primary navigation">
+        <button type="button" class="tab active" data-tab="today"><span>Dashboard</span></button>
+        <button type="button" class="tab" data-tab="gym"><span>Workouts</span></button>
+        <button type="button" class="tab" data-tab="plan"><span>Running</span></button>
+        <button type="button" class="tab" data-tab="food"><span>Nutrition</span></button>
+        <button type="button" class="tab" data-tab="progress"><span>Progress</span></button>
+        <button type="button" class="tab" data-tab="settings"><span>More</span></button>
+      </nav>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

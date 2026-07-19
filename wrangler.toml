@@ -1,0 +1,14 @@
+name = "hybrid-tracker"
+pages_build_output_dir = "."
+compatibility_date = "2026-07-13"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hybrid-tracker"
+database_id = "6906c065-4a13-4cf3-a9fa-de799c855853"
+
+[vars]
+APP_ORIGIN = "https://hybrid-tracker.pages.dev"
+OPEN_FOOD_FACTS_USER_AGENT = "HybridTracker/0.4.0"
+DEV_MODE = "false"
+EMAIL_PROVIDER = "postmark"

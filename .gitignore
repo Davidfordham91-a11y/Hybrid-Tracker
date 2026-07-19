@@ -1,0 +1,39 @@
+# Dependencies and package manager caches
+node_modules/
+.pnpm-store/
+.yarn/
+.npm/
+
+# Local environment and secrets
+.env
+.env.*
+*.local
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Build output and generated archives
+dist/
+build/
+.next/
+.vite/
+coverage/
+*.zip
+
+# Cloudflare and local tool state
+.wrangler/
+.mf/
+
+# Runtime logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
